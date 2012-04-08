@@ -1,0 +1,229 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Fcntl qw(SEEK_SET);
+use File::Find;
+use vars qw(*name);
+*name = *File::Find::name;
+
+my %DEFAULT = ();
+
+$DEFAULT{'long'} = 80;
+
+my @files;
+my $recursive;
+my $fn_printed;
+
+sub is_source_file {
+    my $fn = shift;
+    my $type;
+
+    $type = qx(file $fn);
+
+    chomp $type;
+
+    return 1 if ($type =~ /.*text\ executable$/
+                 or $type =~ /.*program\ text$/);
+
+    return 0;
+}
+
+sub is_makefile {
+    my $f = shift;
+
+    return qx(file $f) =~ ".*make commands text";
+}
+
+sub check_long_lines {
+    my $fh = shift;
+    my $fn = shift;
+    my @line;
+    my ($header, $cnt, $l);
+
+    seek($fh, 0, SEEK_SET)
+        or die "could not rewind $fn: $!";
+
+    $cnt = $header = 0;
+
+    while (<$fh>) {
+        $cnt++;
+        $l = length;
+
+        if ($l > $DEFAULT{'long'}) {
+            if (not $header) {
+                print "$fn\n" if (not $fn_printed);
+                print "long lines:\n";
+
+                $header = $fn_printed = 1;
+            }
+
+            print "line $cnt ($l chars): $_";
+        }
+    }
+
+    print "\n" if ($header);
+
+    return $header;
+}
+
+sub check_tabs {
+    my $fh = shift;
+    my $fn = shift;
+    my ($cnt, $header);
+
+    seek($fh, 0, SEEK_SET)
+        or die "could not rewind $fn: $!";
+
+    $cnt = $header = 0;
+
+    while (<$fh>) {
+        $cnt++;
+
+        if ($_ =~ /.*\t.*/) {
+            if (not $header) {
+                print "$fn\n" if (not $fn_printed);
+                print "tabs:\n";
+
+                $header = $fn_printed = 1;
+            }
+
+            print "line $cnt: $_";
+        }
+    }
+
+    print "\n" if ($header);
+
+    return $header;
+}
+
+sub check_trailing {
+    my $fh = shift;
+    my $fn = shift;
+    my ($cnt, $header);
+
+    seek($fh, 0, SEEK_SET)
+        or die "could not rewind $fn: $!";
+
+    $cnt = $header = 0;
+
+    while (<$fh>) {
+        $cnt++;
+
+        if ($_ =~ /[^\t ]*[\t ]$/) {
+            if (not $header) {
+                print "$fn\n" if (not $fn_printed);
+                print "trailing spaces or tabs:\n";
+
+                $header = $fn_printed = 1;
+            }
+
+            print "line $cnt: $_";
+        }
+    }
+
+    print "\n" if ($header);
+
+    return $header;
+}
+
+sub check_empty_lines {
+    my $fh = shift;
+    my $fn = shift;
+    my ($cnt, $header, $empty, $ret);
+
+    seek($fh, 0, SEEK_SET)
+        or die "could not rewind $fn: $!";
+
+    $cnt = $header = $empty = 0;
+    $ret = "";
+
+    while (<$fh>) {
+        $cnt++;
+
+        if ($_ eq "\n" and $empty) {
+            if (not $header) {
+                print "$fn\n" if (not $fn_printed);
+                print "empty lines:\n";
+
+                $header = $fn_printed = 1;
+            }
+
+            $ret = $ret . (($ret eq "") ? "" : ", ") . "$cnt";
+        }
+
+        $empty = ($_ eq "\n") ? 1 : 0;
+    }
+
+    # check last line too
+    if ($empty) {
+        if (not $header) {
+            print "$fn\n" if (not $fn_printed);
+            print "empty lines:\n";
+
+            $header = $fn_printed = 1;
+        }
+
+        $ret = $ret . (($ret eq "") ? "" : ", ") . "$cnt";
+    }
+
+    print "$ret\n" if ($header);
+
+    return $header;
+}
+
+sub check {
+    my $file = shift;
+    my ($fh, $ret);
+
+    open($fh, "<", $file)
+        or die "could not open $file: $!";
+
+    $ret = $fn_printed = 0;
+
+    $ret += check_long_lines($fh, $file);
+    $ret += check_tabs($fh, $file) if (not is_makefile($file));
+    $ret += check_trailing($fh, $file);
+    $ret += check_empty_lines($fh, $file);
+
+    close($fh)
+        or die "could not close $file: $!";
+
+    return $ret;
+}
+
+sub wanted {
+    -d and return;
+
+    $name =~ s/\.\///;
+
+    (substr($name, 0, 1) eq '.') and return;
+
+    $files[$#files + 1] = $name;
+}
+
+sub check_pwd {
+    my $rec = shift;
+    my $r;
+
+    @files = <*>        if (not $rec);
+    find(\&wanted, '.') if ($rec);
+
+    for (my $i = 0; $i <= $#files; $i++, $r = 0) {
+        $r = check($files[$i]) if (is_source_file($files[$i]));
+
+        #print "\n" if ($r and not $i == $#files);
+    }
+
+    exit(0);
+}
+
+$recursive = 0;
+
+if ($#ARGV == 0 and $ARGV[0] eq "-r") {
+    $recursive = 1;
+    shift @ARGV;
+}
+
+check_pwd($recursive) if ($#ARGV == -1);
